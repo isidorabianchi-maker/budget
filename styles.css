@@ -126,7 +126,11 @@ small { font-size: 13px; font-weight: 400; }
   border-top: 1px solid var(--line);
   padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
 }
-.tab { display: flex; flex-direction: column; align-items: center; font-size: 11px; color: var(--muted); width: 72px; padding: 2px 0; }
+.tab { display: flex; flex-direction: column; align-items: center; font-size: 11px; color: var(--muted); width: 64px; padding: 2px 0; }
+.bar i.share { background: var(--accent); }
+.how { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 6px; }
+.how summary { color: var(--accent); font-size: 14px; padding: 6px 0; cursor: pointer; }
+.how .kv { font-size: 14px; }
 .tab span { font-size: 22px; line-height: 26px; }
 .tab.on { color: var(--accent); }
 .add { width: 52px; height: 52px; border-radius: 50%; background: var(--accent); color: var(--card); font-size: 30px; line-height: 1; display: grid; place-items: center; margin-top: -18px; box-shadow: 0 4px 14px rgba(0,0,0,.18); }

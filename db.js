@@ -26,6 +26,10 @@ function supabaseStore(sb) {
       await Promise.all(TABLES.map(async (t) => {
         out[t] = check(await sb.from(t).select("*"));
       }));
+      // "planned" was added later; keep working if that SQL update hasn't been run yet.
+      const planned = await sb.from("planned").select("*");
+      out.planned = planned.error ? [] : planned.data;
+      out.plannedMissing = !!planned.error;
       out.deletedKeys = out.transactions.filter((t) => t.deleted && t.recurring_key).map((t) => t.recurring_key);
       out.transactions = out.transactions.filter((t) => !t.deleted);
       return out;
@@ -87,11 +91,27 @@ function demoSeed() {
   };
 }
 
+function demoPlanned() {
+  const p = (name, kind, amount, month, repeat_until = null) => ({ id: uid(), name, kind, amount, month, repeat_until, done: false });
+  return [
+    p("Monthly income (after taxes)", "in", 3100, "2026-12", "2028-06"),
+    p("Fall 2026 tuition, installment 3 of 3", "out", 8901.92, "2026-12"),
+    p("Spring 2027 tuition + health plan", "out", 26500, "2027-01"),
+    p("College Ave loan, year 1", "in", 15000, "2027-01"),
+    p("Summer internship (after taxes)", "in", 25000, "2027-08"),
+    p("Fall 2027 tuition + health plan", "out", 41500, "2027-08"),
+    p("College Ave loan, year 2, part 1", "in", 20000, "2027-08"),
+    p("Spring 2028 tuition + health plan", "out", 41500, "2028-01"),
+    p("College Ave loan, year 2, part 2", "in", 20000, "2028-01"),
+  ];
+}
+
 function demoStore() {
   let db;
   const load = () => {
     try { db = JSON.parse(localStorage.getItem(DEMO_KEY)); } catch { db = null; }
     if (!db) { db = demoSeed(); save(); }
+    db.planned ||= demoPlanned();
   };
   const save = () => { try { localStorage.setItem(DEMO_KEY, JSON.stringify(db)); } catch {} };
   load();

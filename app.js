@@ -68,6 +68,47 @@ function balances() {
   return bal;
 }
 
+const monthsRange = (a, b) => { const out = []; for (let m = a; m <= b; m = addMonths(m, 1)) out.push(m); return out; };
+const spentIn = (m) => monthTx(m).reduce((s, t) => s + (t.kind === "expense" ? num(t.amount) : 0), 0);
+const totalLimit = (m) => categories().filter((c) => !c.archived).reduce((s, c) => s + limitFor(c.id, m), 0);
+
+// How many times a planned item still counts between `from` and `to`.
+// One-off items count in their month (if not done). Monthly items count only future months,
+// because this month's real deposit is already in (or about to be added to) the balances.
+function plannedCount(p, from, to) {
+  if (p.done) return 0;
+  if (!p.repeat_until || p.repeat_until <= p.month) return p.month >= from && p.month <= to ? 1 : 0;
+  let n = 0;
+  for (let m = p.month; m <= p.repeat_until; m = addMonths(m, 1)) if (m > from && m <= to) n++;
+  return n;
+}
+
+// Money available for day-to-day living from the start of this month until the end of the period.
+function projection() {
+  const st = S.data.settings[0] || {};
+  if (!st.end_month) return null;
+  const cur = thisMonth(), end = st.end_month;
+  const monthsLeft = monthsBetween(cur, end) + 1;
+  if (monthsLeft <= 0) return null;
+  const bal = Object.values(balances()).reduce((s, x) => s + x, 0);
+  const spentNow = spentIn(cur);
+  let plannedIn = 0, plannedOut = 0;
+  for (const p of S.data.planned || []) {
+    const v = num(p.amount) * plannedCount(p, cur, end);
+    if (p.kind === "in") plannedIn += v; else plannedOut += v;
+  }
+  const pool = bal + spentNow + plannedIn - plannedOut;
+  const limitsSum = monthsRange(cur, end).reduce((s, m) => s + totalLimit(m), 0);
+  const past = monthsRange(addMonths(cur, -3), addMonths(cur, -1))
+    .filter((m) => (!st.start_month || m >= st.start_month) && monthTx(m).some((t) => t.kind === "expense"));
+  const avg = past.length ? past.reduce((s, m) => s + spentIn(m), 0) / past.length : null;
+  return {
+    cur, end, monthsLeft, bal, spentNow, plannedIn, plannedOut, pool,
+    perMonth: pool / monthsLeft, limitsSum, endAtLimits: pool - limitsSum,
+    avg, avgMonths: past.length, endAtPace: avg == null ? null : pool - avg * monthsLeft,
+  };
+}
+
 function myName() {
   const e = (S.user?.email || "").toLowerCase();
   return S.data?.allowed_emails?.find((x) => x.email.toLowerCase() === e)?.name || e.split("@")[0] || "";
@@ -153,7 +194,7 @@ function render() {
       <button class="primary" data-action="signout">Sign out</button></div>`;
     return;
   }
-  const views = { home: homeView, tx: txView, settings: settingsView };
+  const views = { home: homeView, tx: txView, analysis: analysisView, settings: settingsView };
   const y = window.scrollY;
   app.innerHTML = `
     ${isDemo ? `<div class="banner">Demo mode · fake data, saved only on this device</div>` : ""}
@@ -163,6 +204,7 @@ function render() {
       ${tab("home", "◔", "Budget")}
       ${tab("tx", "≡", "Activity")}
       <button class="add" data-action="new-tx" aria-label="Add transaction">+</button>
+      ${tab("analysis", "▥", "Analysis")}
       ${tab("settings", "⚙︎", "Settings")}
     </nav>`;
   window.scrollTo(0, y);
@@ -201,12 +243,12 @@ function homeView() {
   const total = Object.values(bal).reduce((s, x) => s + x, 0);
   const st = S.data.settings[0] || {};
   let period = `<p class="muted small">Set your 2-year period in <a href="#" data-action="view" data-v="settings">Settings</a> to see how much you can spend per month.</p>`;
-  if (st.start_month && st.end_month) {
-    const monthsLeft = monthsBetween(thisMonth(), st.end_month) + 1;
-    period = monthsLeft > 0
-      ? `<div class="kv"><span>Available per month<br><small class="muted">${monthsLeft} month${monthsLeft === 1 ? "" : "s"} left, through ${shortMonth(st.end_month)}</small></span><b>${money(total / monthsLeft)}</b></div>
-         <div class="kv"><span>Your monthly limits</span><b>${money(totalLimit)}</b></div>`
-      : `<p class="muted small">Your 2-year period ended in ${shortMonth(st.end_month)}.</p>`;
+  const proj = projection();
+  if (proj) {
+    period = `<div class="kv"><span>You can spend per month<br><small class="muted">${proj.monthsLeft} month${proj.monthsLeft === 1 ? "" : "s"} left, after planned tuition &amp; income · <a href="#" data-action="view" data-v="analysis">details</a></small></span><b>${money(proj.perMonth)}</b></div>
+      <div class="kv"><span>Your monthly limits</span><b>${money(totalLimit)}</b></div>`;
+  } else if (st.end_month) {
+    period = `<p class="muted small">Your 2-year period ended in ${shortMonth(st.end_month)}.</p>`;
   }
 
   return `
@@ -247,6 +289,131 @@ function homeView() {
       <div class="kv total"><span>Total</span><b>${money(total)}</b></div>
       ${period}
     </section>`;
+}
+
+function analysisView() {
+  const st = S.data.settings[0] || {};
+  const cur = thisMonth();
+  const p = projection();
+  const signed = (v) => `<b class="${v < 0 ? "neg" : "pos"}">${v < 0 ? "−" : ""}${money(Math.abs(v))}</b>`;
+
+  // 1) On track?
+  let track;
+  if (!p) {
+    track = `<p class="small">Set your 2-year period in <a href="#" data-action="view" data-v="settings">Settings</a> to see this.</p>`;
+  } else {
+    track = `
+      <div class="kv"><span>You can spend per month<br><small class="muted">${shortMonth(cur)} – ${shortMonth(p.end)} · ${p.monthsLeft} months</small></span><b>${money(p.perMonth)}</b></div>
+      <div class="kv"><span>Your monthly limits now</span><b>${money(totalLimit(cur))}</b></div>
+      <div class="kv"><span>Left in ${shortMonth(p.end)} if you spend exactly your limits</span>${signed(p.endAtLimits)}</div>
+      ${p.avg == null
+        ? `<p class="muted small">After your first full month of entries, this also shows where you'd end up at your real spending pace.</p>`
+        : `<div class="kv"><span>Left in ${shortMonth(p.end)} at your real pace<br><small class="muted">You spent ${money(p.avg)}/month on average (last ${p.avgMonths} month${p.avgMonths === 1 ? "" : "s"})</small></span>${signed(p.endAtPace)}</div>`}
+      <details class="how"><summary>How this is calculated</summary>
+        <div class="kv"><span>Money in your accounts now</span><b>${money(p.bal)}</b></div>
+        <div class="kv"><span>+ Already spent this month</span><b>${money(p.spentNow)}</b></div>
+        <div class="kv"><span>+ Planned money coming in</span><b class="pos">+${money(p.plannedIn)}</b></div>
+        <div class="kv"><span>− Planned payments</span><b class="neg">−${money(p.plannedOut)}</b></div>
+        <div class="kv total"><span>= For living, ${shortMonth(cur)} – ${shortMonth(p.end)}</span><b>${money(p.pool)}</b></div>
+      </details>`;
+  }
+  const planned = [...(S.data.planned || [])].sort((a, b) => a.month.localeCompare(b.month) || a.name.localeCompare(b.name));
+  const plannedList = S.data.plannedMissing
+    ? `<p class="small pad">To use planned money, run the SQL update in Supabase first (see the setup steps from Claude).</p>`
+    : `<section class="card list">
+        ${planned.map((x) => {
+          const past = (x.repeat_until || x.month) < cur;
+          const when = x.repeat_until && x.repeat_until > x.month ? `Monthly, ${shortMonth(x.month)} – ${shortMonth(x.repeat_until)}` : shortMonth(x.month);
+          return `<button class="item ${x.done || past ? "dim" : ""}" data-action="edit-plan" data-id="${x.id}">
+            <span>${esc(x.name)}<small>${when}${x.done ? " · Done" : past ? " · Past" : ""}</small></span>
+            <b class="${x.kind === "in" ? "pos" : "neg"}">${x.kind === "in" ? "+" : "−"}${money(x.amount)}</b></button>`;
+        }).join("")}
+        <button class="item add-row" data-action="new-plan">+ Add planned money</button>
+      </section>
+      <p class="muted small pad">When a planned payment or deposit really happens, record it in Activity and mark it <b>Done</b> here so it isn't counted twice.</p>`;
+
+  // 2) Month by month
+  // Start at the first month with entries or limits (months before you used the app would just be empty).
+  const firstUsed = [...S.data.transactions.map((t) => String(t.date).slice(0, 7)), ...S.data.category_limits.map((l) => l.month)].sort()[0] || cur;
+  const first = st.start_month && st.start_month > firstUsed ? st.start_month : firstUsed;
+  const months = monthsRange(first > cur ? cur : first, cur).slice(-12).reverse();
+  const totals = months.map((m) => ({ m, spent: spentIn(m), limit: totalLimit(m) }));
+  const full = totals.filter((x) => x.m < cur && x.spent > 0);
+  const avgFull = full.length ? full.reduce((s, x) => s + x.spent, 0) / full.length : null;
+
+  // 3) Where the money goes
+  const scopeMonths = S.anaScope === "all" ? months : [cur];
+  const byCat = {};
+  let catTotal = 0;
+  for (const m of scopeMonths) for (const t of monthTx(m)) {
+    if (t.kind !== "expense") continue;
+    byCat[t.category_id] = (byCat[t.category_id] || 0) + num(t.amount);
+    catTotal += num(t.amount);
+  }
+  const catRows = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
+  const top = catRows[0]?.[1] || 1;
+
+  return `
+    <h1 class="title">Analysis</h1>
+
+    <h2>On track to ${p ? shortMonth(p.end) : "the end"}?</h2>
+    <section class="card">${track}</section>
+    <h3>Planned money</h3>
+    ${plannedList}
+
+    <h2>Month by month</h2>
+    <section class="card list">
+      ${totals.map((x) => {
+        const pct = x.limit ? (x.spent / x.limit) * 100 : (x.spent ? 100 : 0);
+        return `<div class="cat"><div class="row"><span>${monthLabel(x.m)}${x.m === cur ? ' <small class="muted">(so far)</small>' : ""}</span>
+          <b class="${x.limit && x.spent > x.limit ? "neg" : ""}">${money(x.spent)}</b></div>
+          <div class="bar thin"><i class="${barClass(pct)}" style="width:${Math.min(100, pct)}%"></i></div>
+          <div class="muted small">${x.limit ? `${Math.round(pct)}% of ${money(x.limit)}` : "No limits set"}</div></div>`;
+      }).join("")}
+    </section>
+    ${avgFull != null ? `<p class="muted small pad">Average of finished months: <b>${money(avgFull)}</b> per month.</p>` : ""}
+
+    <h2>Where the money goes</h2>
+    <div class="seg">
+      <button class="${S.anaScope !== "all" ? "on" : ""}" data-action="ana-scope" data-s="month">This month</button>
+      <button class="${S.anaScope === "all" ? "on" : ""}" data-action="ana-scope" data-s="all">${months.length > 1 ? `Last ${months.length} months` : "Whole period"}</button>
+    </div>
+    <section class="card list">
+      ${catRows.length ? catRows.map(([id, v]) => {
+        const c = catById(id);
+        return `<div class="cat"><div class="row"><span>${esc(c?.emoji || "•")} ${esc(c?.name || "Uncategorized")}</span>
+          <b>${money(v)} <small class="muted">${Math.round((v / catTotal) * 100)}%</small></b></div>
+          <div class="bar thin"><i class="share" style="width:${(v / top) * 100}%"></i></div></div>`;
+      }).join("") : `<p class="empty">No spending yet.</p>`}
+      ${catRows.length ? `<div class="cat"><div class="row"><span><b>Total</b></span><b>${money(catTotal)}</b></div></div>` : ""}
+    </section>`;
+}
+
+function planSheet(d) {
+  return `
+    <div class="seg">
+      <button type="button" class="${d.kind === "in" ? "on" : ""}" data-action="plan-kind" data-k="in">Money in</button>
+      <button type="button" class="${d.kind === "out" ? "on" : ""}" data-action="plan-kind" data-k="out">Payment</button>
+    </div>
+    <label class="field">Name <input name="name" value="${esc(d.name)}" placeholder="e.g. Spring tuition"></label>
+    <label class="field">Amount <input name="amount" inputmode="decimal" value="${esc(d.amount)}" placeholder="$0.00"></label>
+    <label class="field">Month <input type="month" name="month" value="${esc(d.month)}"></label>
+    <label class="field">Repeats monthly until <input type="month" name="repeat_until" value="${esc(d.repeat_until || "")}"></label>
+    <p class="muted small">Leave "Repeats monthly until" empty for a one-time item.</p>
+    ${d.id ? `<label class="check"><input type="checkbox" name="done" ${d.done ? "checked" : ""}> Done (already recorded in Activity)</label>
+      <button type="button" class="danger" data-action="delete-plan">Delete planned item</button>` : ""}`;
+}
+
+function savePlan() {
+  const d = S.sheet.draft;
+  const name = (d.name || "").trim();
+  const amount = parseAmount(d.amount);
+  if (!name) return sheetError("Enter a name.");
+  if (!(amount > 0)) return sheetError("Enter an amount.");
+  if (!d.month) return sheetError("Choose a month.");
+  if (d.repeat_until && d.repeat_until < d.month) return sheetError("\"Repeats until\" must be after the month.");
+  const row = { name, kind: d.kind, amount, month: d.month, repeat_until: d.repeat_until || null, done: !!d.done };
+  return save(() => d.id ? S.store.update("planned", d.id, row) : S.store.insert("planned", row));
 }
 
 function txView() {
@@ -343,7 +510,7 @@ function renderSheet() {
   const s = S.sheet;
   if (!s) { sheetEl.innerHTML = ""; document.body.classList.remove("locked"); return; }
   document.body.classList.add("locked");
-  const body = { tx: txSheet, cat: catSheet, account: accountSheet, rec: recSheet }[s.type](s.draft);
+  const body = { tx: txSheet, cat: catSheet, account: accountSheet, rec: recSheet, plan: planSheet }[s.type](s.draft);
   sheetEl.innerHTML = `<div class="backdrop" data-action="close"></div>
     <form class="sheet" data-form="${s.type}" novalidate>
       <div class="sheet-head">
@@ -572,6 +739,16 @@ const ACTIONS = {
     save(() => S.store.remove("recurring", id));
   },
 
+  "ana-scope": (el) => { S.anaScope = el.dataset.s; render(); },
+  "new-plan": () => openSheet("plan", "New planned item", { kind: "out", name: "", amount: "", month: addMonths(thisMonth(), 1), repeat_until: "", done: false }),
+  "edit-plan": (el) => { const x = S.data.planned.find((p) => p.id === el.dataset.id); openSheet("plan", "Edit planned item", { ...x, amount: String(num(x.amount)) }); },
+  "plan-kind": (el) => { S.sheet.draft.kind = el.dataset.k; renderSheet(); },
+  "delete-plan": () => {
+    if (!confirm("Delete this planned item?")) return;
+    const id = S.sheet.draft.id;
+    save(() => S.store.remove("planned", id));
+  },
+
   "reset-demo": () => { if (confirm("Reset all demo data?")) { S.store.resetDemo(); reload(); } },
   signout: async () => { await S.store.signOut(); S.user = null; S.data = null; renderAuth(); },
   signup: async (el) => {
@@ -622,7 +799,7 @@ document.addEventListener("submit", async (e) => {
     } catch (err) { renderAuth(err.message, email); }
     return;
   }
-  ({ tx: saveTx, cat: saveCat, account: saveAccount, rec: saveRec })[form]?.();
+  ({ tx: saveTx, cat: saveCat, account: saveAccount, rec: saveRec, plan: savePlan })[form]?.();
 });
 
 // Refresh when the app comes back to the foreground, so you see each other's entries.
