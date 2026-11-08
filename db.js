@@ -3,7 +3,7 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js";
 
 const TABLES = ["settings", "accounts", "categories", "category_limits", "recurring", "transactions", "allowed_emails"];
 
-export const isDemo = !SUPABASE_URL || !SUPABASE_ANON_KEY;
+export const isDemo = !SUPABASE_URL || !SUPABASE_ANON_KEY || new URLSearchParams(location.search).has("demo");
 
 // ---------- Supabase ----------
 function supabaseStore(sb) {

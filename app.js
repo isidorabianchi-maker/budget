@@ -18,7 +18,19 @@ const monthsBetween = (a, b) => { const [y1, m1] = a.split("-").map(Number); con
 const monthLabel = (m) => new Date(`${m}-15T12:00:00`).toLocaleDateString("en-US", { month: "long", year: "numeric" });
 const shortMonth = (m) => new Date(`${m}-15T12:00:00`).toLocaleDateString("en-US", { month: "short", year: "numeric" });
 const dayLabel = (d) => new Date(`${d}T12:00:00`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
-const parseAmount = (s) => Math.round(Number(String(s ?? "").replace(/[$,\s]/g, "")) * 100) / 100;
+// Accepts "1600.50", "1,600.50", "1600,50" and "1.600,50" (iPhones in Spanish type a comma for decimals).
+function parseAmount(s) {
+  let t = String(s ?? "").replace(/[$\s]/g, "");
+  const lastComma = t.lastIndexOf(","), lastDot = t.lastIndexOf(".");
+  if (lastComma > lastDot) {
+    const decimals = t.length - lastComma - 1;
+    t = lastDot >= 0 || decimals !== 3 ? t.replace(/\./g, "").replace(",", "§").replace(/,/g, "").replace("§", ".") : t.replace(/,/g, "");
+  } else {
+    t = t.replace(/,/g, "");
+  }
+  if (t === "") return NaN;
+  return Math.round(Number(t) * 100) / 100;
+}
 const num = (x) => Number(x) || 0;
 
 const KIND_LABEL = { expense: "Expense", income: "Deposit", transfer: "Transfer", tuition: "Tuition", tuition_refund: "Tuition discount" };
@@ -411,7 +423,11 @@ function openSheet(type, title, draft) {
   if (type === "tx" && !draft.id) sheetEl.querySelector(".amount")?.focus();
 }
 function closeSheet() { S.sheet = null; renderSheet(); }
-function sheetError(msg) { S.sheet.error = msg; renderSheet(); }
+function sheetError(msg) {
+  S.sheet.error = msg;
+  renderSheet();
+  sheetEl.querySelector(".sheet")?.scrollTo({ top: 0, behavior: "smooth" });
+}
 
 // ---------- saving ----------
 async function save(fn) {
