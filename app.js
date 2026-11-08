@@ -110,21 +110,27 @@ async function generateRecurring() {
 }
 
 // ---------- screens ----------
-function renderAuth(msg = "") {
+function renderAuth(msg = "", email = "") {
   sheetEl.innerHTML = "";
   app.innerHTML = `
     <div class="auth">
       <div class="logo">$</div>
       <h1>Our Budget</h1>
       <p class="muted">Sign in to see your shared budget.</p>
-      <form data-form="auth">
-        <input type="email" name="email" placeholder="Email" autocomplete="username" required>
-        <input type="password" name="password" placeholder="Password (at least 6 characters)" autocomplete="current-password" minlength="6" required>
+      <form data-form="auth" novalidate>
+        <input type="email" name="email" placeholder="Email" autocomplete="username" autocapitalize="off" value="${esc(email)}">
+        <input type="password" name="password" placeholder="Password (at least 6 characters)" autocomplete="current-password">
         <button class="primary" type="submit">Sign in</button>
         <button class="link" type="button" data-action="signup">First time? Create your account</button>
       </form>
       ${msg ? `<p class="msg">${esc(msg)}</p>` : ""}
     </div>`;
+}
+
+function authProblem(email, pw) {
+  if (!/^\S+@\S+\.\S+$/.test(email)) return "First type your email in the Email box.";
+  if (pw.length < 6) return "Type a password of at least 6 characters in the Password box.";
+  return "";
 }
 
 function render() {
@@ -554,12 +560,15 @@ const ACTIONS = {
   signout: async () => { await S.store.signOut(); S.user = null; S.data = null; renderAuth(); },
   signup: async (el) => {
     const f = el.closest("form");
-    if (!f.reportValidity()) return;
+    const email = f.email.value.trim(), pw = f.password.value;
+    const problem = authProblem(email, pw);
+    if (problem) return renderAuth(problem, email);
+    el.textContent = "Creating account…";
     try {
-      const r = await S.store.signUp(f.email.value.trim(), f.password.value);
-      if (r.needsConfirm) renderAuth("Account created. Check your email and tap the confirmation link, then come back here and sign in.");
+      const r = await S.store.signUp(email, pw);
+      if (r.needsConfirm) renderAuth("Account created. Check your email and tap the confirmation link, then come back here and sign in.", email);
       else { S.user = await S.store.user(); await reload(); }
-    } catch (e) { renderAuth(e.message); }
+    } catch (e) { renderAuth(e.message, email); }
   },
 };
 
@@ -586,11 +595,15 @@ document.addEventListener("submit", async (e) => {
   const f = e.target;
   const form = f.dataset.form;
   if (form === "auth") {
+    const email = f.email.value.trim(), pw = f.password.value;
+    const problem = authProblem(email, pw);
+    if (problem) return renderAuth(problem, email);
+    f.querySelector(".primary").textContent = "Signing in…";
     try {
-      await S.store.signIn(f.email.value.trim(), f.password.value);
+      await S.store.signIn(email, pw);
       S.user = await S.store.user();
       await reload();
-    } catch (err) { renderAuth(err.message); }
+    } catch (err) { renderAuth(err.message, email); }
     return;
   }
   ({ tx: saveTx, cat: saveCat, account: saveAccount, rec: saveRec })[form]?.();
